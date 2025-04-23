@@ -1,0 +1,165 @@
+# Was, wenn mein Datensatz nicht auf dem Hub ist?[[was-wenn-mein-datensatz-nicht-auf-dem-hub-ist]]
+
+<CourseFloatingBanner chapter={5}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter5/section2.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter5/section2.ipynb"},
+]} />
+
+Du weißt, wie du den [Hugging Face Hub](https://huggingface.co/datasets) nutzen kannst, um Datensätze herunterzuladen. Aber oft wirst du mit Daten arbeiten, die entweder auf deinem Laptop oder auf einem entfernten Server gespeichert sind. In diesem Abschnitt zeigen wir dir, wie 🤗 Datasets verwendet werden kann, um Datensätze zu laden, die nicht auf dem Hugging Face Hub verfügbar sind.
+
+<Youtube id="HyQgpJTkRdE"/>
+
+## Arbeiten mit lokalen und entfernten Datensätzen[[arbeiten-mit-lokalen-und-entfernten-datensätzen]]
+
+🤗 Datasets bietet Ladeskripte zum Laden lokaler und entfernter Datensätze. Es unterstützt mehrere gängige Datenformate, wie zum Beispiel:
+
+|    Datenformat     | Ladeskript |                         Beispiel                          |
+| :----------------: | :------------: | :-----------------------------------------------------: |
+|     CSV & TSV      |     `csv`      |     `load_dataset("csv", data_files="meine_datei.csv")`     |
+|    Textdateien     |     `text`     |    `load_dataset("text", data_files="meine_datei.txt")`     |
+| JSON & JSON Lines  |     `json`     |   `load_dataset("json", data_files="meine_datei.jsonl")`    |
+| Pickled DataFrames |    `pandas`    | `load_dataset("pandas", data_files="mein_dataframe.pkl")` |
+
+Wie in der Tabelle gezeigt, müssen wir für jedes Datenformat nur den Typ des Ladeskripts in der `load_dataset()`-Funktion angeben, zusammen mit einem `data_files`-Argument, das den Pfad zu einer oder mehreren Dateien angibt. Beginnen wir damit, einen Datensatz aus lokalen Dateien zu laden; später werden wir sehen, wie man dasselbe mit entfernten Dateien macht.
+
+## Laden eines lokalen Datensatzes[[laden-eines-lokalen-datensatzes]]
+
+Für dieses Beispiel verwenden wir den [SQuAD-it-Datensatz](https://github.com/crux82/squad-it/), einen umfangreichen Datensatz für Fragenbeantwortung auf Italienisch.
+
+Die Trainings- und Test-Splits werden auf GitHub gehostet, sodass wir sie mit einem einfachen `wget`-Befehl herunterladen können:
+
+```python
+!wget https://github.com/crux82/squad-it/raw/master/SQuAD_it-train.json.gz
+!wget https://github.com/crux82/squad-it/raw/master/SQuAD_it-test.json.gz
+```
+
+Dadurch werden zwei komprimierte Dateien namens *SQuAD_it-train.json.gz* und *SQuAD_it-test.json.gz* heruntergeladen, die wir mit dem Linux-Befehl `gzip` dekomprimieren können:
+
+```python
+!gzip -dkv SQuAD_it-*.json.gz
+```
+
+```bash
+SQuAD_it-test.json.gz:	   87.4% -- ersetzt durch SQuAD_it-test.json
+SQuAD_it-train.json.gz:	   82.2% -- ersetzt durch SQuAD_it-train.json
+```
+
+Wir sehen, dass die komprimierten Dateien durch _SQuAD_it-train.json_ und _SQuAD_it-test.json_ ersetzt wurden und dass die Daten im JSON-Format gespeichert sind.
+
+<Tip>
+
+✎ Wenn du dich fragst, warum in den obigen Shell-Befehlen ein `!`-Zeichen steht: Das liegt daran, dass wir sie in einem Jupyter Notebook ausführen. Entferne einfach das Präfix, wenn du den Datensatz in einem Terminal herunterladen und entpacken möchtest.
+
+</Tip>
+
+Um eine JSON-Datei mit der `load_dataset()`-Funktion zu laden, müssen wir nur wissen, ob es sich um gewöhnliches JSON (ähnlich einem verschachtelten Dictionary) oder JSON Lines (zeilengetrenntes JSON) handelt. Wie viele Datensätze zur Fragenbeantwortung verwendet SQuAD-it das verschachtelte Format, wobei der gesamte Text in einem `data`-Feld gespeichert ist. Das bedeutet, wir können den Datensatz laden, indem wir das `field`-Argument wie folgt angeben:
+
+```py
+from datasets import load_dataset
+
+squad_it_dataset = load_dataset("json", data_files="SQuAD_it-train.json", field="data")
+```
+
+Standardmäßig erstellt das Laden lokaler Dateien ein `DatasetDict`-Objekt mit einem `train`-Split. Wir können dies sehen, indem wir das `squad_it_dataset`-Objekt inspizieren:
+
+```py
+squad_it_dataset
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['title', 'paragraphs'],
+        num_rows: 442
+    })
+})
+```
+
+Dies zeigt uns die Anzahl der Zeilen und die Spaltennamen, die dem Trainingssatz zugeordnet sind. Wir können eines der Beispiele anzeigen, indem wir wie folgt in den `train`-Split indizieren:
+
+```py
+squad_it_dataset["train"][0]
+```
+
+```python out
+{
+    "title": "Terremoto del Sichuan del 2008",
+    "paragraphs": [
+        {
+            "context": "Il terremoto del Sichuan del 2008 o il terremoto...",
+            "qas": [
+                {
+                    "answers": [{"answer_start": 29, "text": "2008"}],
+                    "id": "56cdca7862d2951400fa6826",
+                    "question": "In quale anno si è verificato il terremoto nel Sichuan?",
+                },
+                ...
+            ],
+        },
+        ...
+    ],
+}
+```
+
+Großartig, wir haben unseren ersten lokalen Datensatz geladen! Aber während dies für den Trainingssatz funktionierte, möchten wir eigentlich sowohl den `train`- als auch den `test`-Split in einem einzigen `DatasetDict`-Objekt haben, damit wir `Dataset.map()`-Funktionen auf beide Splits gleichzeitig anwenden können. Dazu können wir dem `data_files`-Argument ein Dictionary übergeben, das jeden Split-Namen einer Datei zuordnet, die diesem Split zugeordnet ist:
+
+```py
+data_files = {"train": "SQuAD_it-train.json", "test": "SQuAD_it-test.json"}
+squad_it_dataset = load_dataset("json", data_files=data_files, field="data")
+squad_it_dataset
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['title', 'paragraphs'],
+        num_rows: 442
+    })
+    test: Dataset({
+        features: ['title', 'paragraphs'],
+        num_rows: 48
+    })
+})
+```
+
+Das ist genau das, was wir wollten. Jetzt können wir verschiedene Vorverarbeitungstechniken anwenden, um die Daten zu bereinigen, die Bewertungen zu tokenisieren und so weiter.
+
+<Tip>
+
+Das `data_files`-Argument der `load_dataset()`-Funktion ist ziemlich flexibel und kann entweder ein einzelner Dateipfad, eine Liste von Dateipfaden oder ein Dictionary sein, das Split-Namen auf Dateipfade abbildet. Du kannst auch Dateien nach einem bestimmten Muster gemäß den Regeln der Unix-Shell auswählen (z. B. kannst du alle JSON-Dateien in einem Verzeichnis als einen einzigen Split auswählen, indem du `data_files="*.json"` setzt). Weitere Details findest du in der 🤗 Datasets-[Dokumentation](https://huggingface.co/docs/datasets/loading#local-and-remote-files).
+
+</Tip>
+
+Die Ladeskripte in 🤗 Datasets unterstützen tatsächlich die automatische Dekomprimierung der Eingabedateien, sodass wir die Verwendung von `gzip` hätten überspringen können, indem wir das `data_files`-Argument direkt auf die komprimierten Dateien verweisen:
+
+```py
+data_files = {"train": "SQuAD_it-train.json.gz", "test": "SQuAD_it-test.json.gz"}
+squad_it_dataset = load_dataset("json", data_files=data_files, field="data")
+```
+
+Dies kann nützlich sein, wenn du nicht viele GZIP-Dateien manuell dekomprimieren möchtest. Die automatische Dekomprimierung gilt auch für andere gängige Formate wie ZIP und TAR. Du musst also nur `data_files` auf die komprimierten Dateien verweisen, und schon bist du fertig!
+
+Nachdem du nun weißt, wie du lokale Dateien auf deinem Laptop oder Desktop laden kannst, schauen wir uns das Laden von entfernten Dateien an.
+
+## Laden eines entfernten Datensatzes[[laden-eines-entfernten-datensatzes]]
+
+Wenn du als Data Scientist oder Programmierer in einem Unternehmen arbeitest, ist es wahrscheinlich, dass die Datensätze, die du analysieren möchtest, auf einem entfernten Server gespeichert sind. Glücklicherweise ist das Laden von entfernten Dateien genauso einfach wie das Laden lokaler Dateien! Anstatt einen Pfad zu lokalen Dateien anzugeben, verweisen wir das `data_files`-Argument von `load_dataset()` auf eine oder mehrere URLs, unter denen die entfernten Dateien gespeichert sind. Für den auf GitHub gehosteten SQuAD-it-Datensatz können wir beispielsweise `data_files` einfach auf die _SQuAD_it-*.json.gz_-URLs verweisen:
+
+```py
+url = "https://github.com/crux82/squad-it/raw/master/"
+data_files = {
+    "train": url + "SQuAD_it-train.json.gz",
+    "test": url + "SQuAD_it-test.json.gz",
+}
+squad_it_dataset = load_dataset("json", data_files=data_files, field="data")
+```
+
+Dies gibt dasselbe `DatasetDict`-Objekt zurück, das wir oben erhalten haben, erspart uns aber den Schritt des manuellen Herunterladens und Dekomprimierens der _SQuAD_it-*.json.gz_-Dateien. Damit schließen wir unseren Exkurs in die verschiedenen Möglichkeiten zum Laden von Datensätzen ab, die nicht auf dem Hugging Face Hub gehostet werden. Nachdem wir nun einen Datensatz zum Spielen haben, machen wir uns an verschiedene Datenmanipulationstechniken!
+
+<Tip>
+
+✏️ **Probier es aus!** Wähle einen anderen Datensatz aus, der auf GitHub oder im [UCI Machine Learning Repository](https://archive.ics.uci.edu/ml/index.php) gehostet wird, und versuche, ihn sowohl lokal als auch remote mit den oben vorgestellten Techniken zu laden. Für Bonuspunkte versuche, einen Datensatz zu laden, der im CSV- oder Textformat gespeichert ist (siehe die [Dokumentation](https://huggingface.co/docs/datasets/loading#local-and-remote-files) für weitere Informationen zu diesen Formaten).
+
+</Tip> 

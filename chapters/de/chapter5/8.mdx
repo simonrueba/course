@@ -1,0 +1,231 @@
+<!-- DISABLE-FRONTMATTER-SECTIONS -->
+
+# Quiz am Ende des Kapitels[[end-of-chapter-quiz]]
+
+<CourseFloatingBanner
+    chapter={5}
+    classNames="absolute z-10 right-0 top-0"
+/>
+
+Dieses Kapitel hat viel Stoff behandelt! Mach dir keine Sorgen, wenn du nicht alle Details verstanden hast; die nächsten Kapitel werden dir helfen zu verstehen, wie die Dinge unter der Haube funktionieren.
+
+Bevor wir jedoch weitermachen, teste, was du in diesem Kapitel gelernt hast.
+
+### 1. Die Funktion `load_dataset()` in 🤗 Datasets ermöglicht es dir, einen Datensatz von welchen der folgenden Orte zu laden?
+
+<Question
+	choices={[
+		{
+			text: "Lokal, z. B. auf deinem Laptop",
+			explain: "Richtig! Du kannst die Pfade lokaler Dateien an das <code>data_files</code>-Argument von <code>load_dataset()</code> übergeben, um lokale Datensätze zu laden.",
+			correct: true
+		},
+		{
+			text: "Dem Hugging Face Hub",
+			explain: "Richtig! Du kannst Datensätze auf dem Hub laden, indem du die Datensatz-ID angibst, z. B. <code>load_dataset('emotion')</code>.",
+			correct: true
+		},
+		{
+			text: "Einem entfernten Server",
+			explain: "Richtig! Du kannst URLs an das <code>data_files</code>-Argument von <code>load_dataset()</code> übergeben, um entfernte Dateien zu laden.",
+			correct: true
+		},
+	]}
+/>
+
+### 2. Angenommen, du lädst eine der GLUE-Aufgaben wie folgt:
+
+```py
+from datasets import load_dataset
+
+dataset = load_dataset("glue", "mrpc", split="train")
+```
+
+Welcher der folgenden Befehle erzeugt eine Zufallsstichprobe von 50 Elementen aus `dataset`?
+
+<Question
+	choices={[
+		{
+			text: "<code>dataset.sample(50)</code>",
+			explain: "Das ist falsch – es gibt keine <code>Dataset.sample()</code>-Methode."
+		},
+		{
+			text: "<code>dataset.shuffle().select(range(50))</code>",
+			explain: "Richtig! Wie du in diesem Kapitel gesehen hast, mischst du zuerst den Datensatz und wählst dann die Stichproben daraus aus.",
+			correct: true
+		},
+		{
+			text: "<code>dataset.select(range(50)).shuffle()</code>",
+			explain: "Das ist falsch – obwohl der Code ausgeführt wird, mischt er nur die ersten 50 Elemente im Datensatz."
+		}
+	]}
+/>
+
+### 3. Angenommen, du hast einen Datensatz über Haustiere namens `pets_dataset`, der eine Spalte `name` enthält, die den Namen jedes Haustieres angibt. Welche der folgenden Vorgehensweisen würde es dir ermöglichen, den Datensatz nach allen Haustieren zu filtern, deren Namen mit dem Buchstaben "L" beginnen?
+
+<Question
+	choices={[
+		{
+			text: "<code>pets_dataset.filter(lambda x : x['name'].startswith('L'))</code>",
+			explain: "Richtig! Die Verwendung einer Python-Lambda-Funktion für diese schnellen Filter ist eine großartige Idee. Fällt dir eine andere Lösung ein?",
+			correct: true
+		},
+		{
+			text: "<code>pets_dataset.filter(lambda x['name'].startswith('L'))</code>",
+			explain: "Das ist falsch – eine Lambda-Funktion hat die allgemeine Form <code>lambda *argumente* : *ausdruck*</code>, du musst also in diesem Fall Argumente angeben."
+		},
+		{
+			text: "Erstelle eine Funktion wie <code>def filter_names(x): return x['name'].startswith('L')</code> und führe <code>pets_dataset.filter(filter_names)</code> aus.",
+			explain: "Richtig! Genau wie bei <code>Dataset.map()</code> kannst du explizite Funktionen an <code>Dataset.filter()</code> übergeben. Dies ist nützlich, wenn du eine komplexe Logik hast, die sich nicht für eine kurze Lambda-Funktion eignet. Welche der anderen Lösungen würde funktionieren?",
+			correct: true
+		}
+	]}
+/>
+
+### 4. Was ist Memory Mapping?
+
+<Question
+	choices={[
+		{
+			text: "Eine Zuordnung zwischen CPU- und GPU-RAM",
+			explain: "Das ist es nicht – versuch es nochmal!",
+		},
+		{
+			text: "Eine Zuordnung zwischen RAM und Dateisystemspeicher",
+			explain: "Richtig! 🤗 Datasets behandelt jeden Datensatz als Memory-Mapped File. Dies ermöglicht es der Bibliothek, auf Elemente des Datensatzes zuzugreifen und damit zu arbeiten, ohne ihn vollständig in den Speicher laden zu müssen.",
+			correct: true
+		},
+		{
+			text: "Eine Zuordnung zwischen zwei Dateien im 🤗 Datasets-Cache",
+			explain: "Das ist nicht richtig – versuch es nochmal!"
+		}
+	]}
+/>
+
+### 5. Welches sind die Hauptvorteile von Memory Mapping?
+
+<Question
+	choices={[
+		{
+			text: "Der Zugriff auf Memory-Mapped Files ist schneller als das Lesen von oder Schreiben auf die Festplatte.",
+			explain: "Richtig! Dies ermöglicht es 🤗 Datasets, blitzschnell zu sein. Das ist aber nicht der einzige Vorteil.",
+			correct: true
+		},
+		{
+			text: "Anwendungen können auf Segmente von Daten in einer extrem großen Datei zugreifen, ohne die gesamte Datei zuerst in den RAM laden zu müssen.",
+			explain: "Richtig! Dies ermöglicht es 🤗 Datasets, Multi-Gigabyte-Datensätze auf deinem Laptop zu laden, ohne deine CPU zu überlasten. Welchen anderen Vorteil bietet Memory Mapping?",
+			correct: true
+		},
+		{
+			text: "Es verbraucht weniger Energie, sodass dein Akku länger hält.",
+			explain: "Das ist nicht richtig – versuch es nochmal!"
+		}
+	]}
+/>
+
+### 6. Warum schlägt der folgende Code fehl?
+
+```py
+from datasets import load_dataset
+
+dataset = load_dataset("allocine", streaming=True, split="train")
+dataset[0]
+```
+
+<Question
+	choices={[
+		{
+			text: "Er versucht, einen Datensatz zu streamen, der zu groß ist, um in den RAM zu passen.",
+			explain: "Das ist nicht richtig – Streaming-Datensätze werden on-the-fly dekomprimiert, und du kannst Terabyte-große Datensätze mit sehr wenig RAM verarbeiten!",
+		},
+		{
+			text: "Er versucht, auf ein <code>IterableDataset</code> zuzugreifen.",
+			explain: "Richtig! Ein <code>IterableDataset</code> ist ein Generator, kein Container, daher solltest du auf seine Elemente mit <code>next(iter(dataset))</code> zugreifen.",
+			correct: true
+		},
+		{
+			text: "Der <code>allocine</code>-Datensatz hat keinen <code>train</code>-Split.",
+			explain: "Das ist falsch – schau dir die [<code>allocine</code>-Datensatzkarte](https://huggingface.co/datasets/allocine) auf dem Hub an, um zu sehen, welche Splits sie enthält."
+		}
+	]}
+/>
+
+### 7. Welches sind die Hauptvorteile der Erstellung einer Datensatzkarte?
+
+<Question
+	choices={[
+		{
+			text: "Sie liefert Informationen über die beabsichtigte Verwendung und die unterstützten Aufgaben des Datensatzes, sodass andere in der Community eine fundierte Entscheidung über dessen Verwendung treffen können.",
+			explain: "Richtig! Undokumentierte Datensätze können verwendet werden, um Modelle zu trainieren, die möglicherweise nicht die Absichten der Datensatzersteller widerspiegeln, oder Modelle hervorbringen, deren rechtlicher Status unklar ist, wenn sie auf Daten trainiert werden, die Datenschutz- oder Lizenzbeschränkungen verletzen. Das ist aber nicht der einzige Vorteil!",
+			correct : true
+		},
+		{
+			text: "Sie hilft, auf die in einem Korpus vorhandenen Verzerrungen (Biases) aufmerksam zu machen.",
+			explain: "Richtig! Fast alle Datensätze weisen irgendeine Form von Bias auf, was nachgelagert negative Folgen haben kann. Sich dessen bewusst zu sein, hilft Modellbauern zu verstehen, wie sie mit den inhärenten Verzerrungen umgehen können. Wobei helfen Datensatzkarten noch?",
+			correct : true
+		},
+		{
+			text: "Sie erhöht die Wahrscheinlichkeit, dass andere in der Community meinen Datensatz verwenden.",
+			explain: "Richtig! Eine gut geschriebene Datensatzkarte führt tendenziell zu einer höheren Nutzung deines wertvollen Datensatzes. Welche weiteren Vorteile bietet sie?",
+			correct: true
+		},
+	]}
+/>
+
+
+### 8. Was ist semantische Suche?
+
+<Question
+	choices={[
+		{
+			text: "Eine Möglichkeit, nach exakten Übereinstimmungen zwischen den Wörtern in einer Abfrage und den Dokumenten in einem Korpus zu suchen",
+			explain: "Das ist falsch – diese Art der Suche wird *lexikalische Suche* genannt, und das ist es, was man typischerweise bei traditionellen Suchmaschinen sieht."
+		},
+		{
+			text: "Eine Möglichkeit, nach übereinstimmenden Dokumenten zu suchen, indem die kontextuelle Bedeutung einer Abfrage verstanden wird",
+			explain: "Richtig! Die semantische Suche verwendet Embedding-Vektoren, um Abfragen und Dokumente darzustellen, und verwendet eine Ähnlichkeitsmetrik, um das Maß der Überlappung zwischen ihnen zu messen. Wie könntest du es sonst beschreiben?",
+			correct: true
+		},
+		{
+			text: "Eine Möglichkeit, die Suchgenauigkeit zu verbessern",
+			explain: "Richtig! Semantische Suchmaschinen können die Absicht einer Abfrage viel besser erfassen als der Abgleich von Schlüsselwörtern und rufen typischerweise Dokumente mit höherer Präzision ab. Aber das ist nicht die einzige richtige Antwort - was bietet die semantische Suche noch?",
+			correct: true
+		}
+	]}
+/>
+
+### 9. Bei der asymmetrischen semantischen Suche hast du normalerweise:
+
+<Question
+	choices={[
+		{
+			text: "Eine kurze Abfrage und einen längeren Absatz, der die Abfrage beantwortet",
+			explain: "Richtig!",
+			correct : true
+		},
+		{
+			text: "Abfragen und Absätze, die ungefähr die gleiche Länge haben",
+			explain: "Das ist eigentlich ein Beispiel für symmetrische semantische Suche – versuch es nochmal!"
+		},
+		{
+			text: "Eine lange Abfrage und einen kürzeren Absatz, der die Abfrage beantwortet",
+			explain: "Das ist falsch – versuch es nochmal!"
+		}
+	]}
+/>
+
+### 10. Kann ich 🤗 Datasets verwenden, um Daten für die Verwendung in anderen Bereichen wie der Sprachverarbeitung zu laden?
+
+<Question
+	choices={[
+		{
+			text: "Nein",
+			explain: "Das ist falsch – 🤗 Datasets unterstützt derzeit tabellarische Daten, Audio und Computer Vision. Schau dir den <a href='https://huggingface.co/datasets/mnist'>MNIST-Datensatz</a> auf dem Hub für ein Computer-Vision-Beispiel an."
+		},
+		{
+			text: "Ja",
+			explain: "Richtig! Schau dir die spannenden Entwicklungen im Bereich Sprache und Sehen in der 🤗 Transformers-Bibliothek an, um zu sehen, wie 🤗 Datasets in diesen Bereichen verwendet wird.",
+			correct : true
+		},
+	]}
+/> 

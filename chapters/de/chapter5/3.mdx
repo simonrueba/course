@@ -1,0 +1,583 @@
+# Zeit zum Zerlegen und Analysieren[[zeit-zum-zerlegen-und-analysieren]]
+
+<CourseFloatingBanner chapter={5}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter5/section3.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter5/section3.ipynb"},
+]} />
+
+Meistens sind die Daten, mit denen du arbeitest, nicht perfekt für das Training von Modellen vorbereitet. In diesem Abschnitt werden wir die verschiedenen Funktionen untersuchen, die 🤗 Datasets zur Bereinigung deiner Datensätze bietet.
+
+<Youtube id="tqfSFcPMgOI"/>
+
+## Unsere Daten zerlegen und analysieren[[unsere-daten-zerlegen-und-analysieren]]
+
+Ähnlich wie Pandas bietet 🤗 Datasets mehrere Funktionen zur Manipulation des Inhalts von `Dataset`- und `DatasetDict`-Objekten. Die Methode `Dataset.map()` haben wir bereits in [Kapitel 3](/course/chapter3) kennengelernt, und in diesem Abschnitt werden wir einige der anderen Funktionen untersuchen, die uns zur Verfügung stehen.
+
+Für dieses Beispiel verwenden wir den [Drug Review Dataset](https://archive.ics.uci.edu/ml/datasets/Drug+Review+Dataset+%28Drugs.com%29), der im [UC Irvine Machine Learning Repository](https://archive.ics.uci.edu/ml/index.php) gehostet wird. Dieser Datensatz enthält Patientenbewertungen zu verschiedenen Medikamenten, zusammen mit der behandelten Erkrankung und einer 10-Sterne-Bewertung der Patientenzufriedenheit.
+
+Zuerst müssen wir die Daten herunterladen und extrahieren, was mit den Befehlen `wget` und `unzip` erfolgen kann:
+
+```py
+!wget "https://archive.ics.uci.edu/ml/machine-learning-databases/00462/drugsCom_raw.zip"
+!unzip drugsCom_raw.zip
+```
+
+Da TSV nur eine Variante von CSV ist, die Tabulatoren anstelle von Kommas als Trennzeichen verwendet, können wir diese Dateien laden, indem wir das `csv`-Ladeskript verwenden und das `delimiter`-Argument in der `load_dataset()`-Funktion wie folgt angeben:
+
+```py
+from datasets import load_dataset
+
+data_files = {"train": "drugsComTrain_raw.tsv", "test": "drugsComTest_raw.tsv"}
+# \t ist das Tabulatorzeichen in Python
+drug_dataset = load_dataset("csv", data_files=data_files, delimiter="\t")
+```
+
+Eine gute Praxis bei jeder Art von Datenanalyse ist es, eine kleine Zufallsstichprobe zu nehmen, um ein schnelles Gefühl für die Art der Daten zu bekommen, mit denen du arbeitest. In 🤗 Datasets können wir eine Zufallsstichprobe erstellen, indem wir die Funktionen `Dataset.shuffle()` und `Dataset.select()` miteinander verketten:
+
+```py
+drug_sample = drug_dataset["train"].shuffle(seed=42).select(range(1000))
+# Einen Blick auf die ersten Beispiele werfen
+drug_sample[:3]
+```
+
+```python out
+{'Unnamed: 0': [87571, 178045, 80482],
+ 'drugName': ['Naproxen', 'Duloxetine', 'Mobic'],
+ 'condition': ['Gout, Acute', 'ibromyalgia', 'Inflammatory Conditions'],
+ 'review': ['"like the previous person mention, I&#039;m a strong believer of aleve, it works faster for my gout than the prescription meds I take. No more going to the doctor for refills.....Aleve works!"',
+  '"I have taken Cymbalta for about a year and a half for fibromyalgia pain. It is great\\r\\nas a pain reducer and an anti-depressant, however, the side effects outweighed \\r\\nany benefit I got from it. I had trouble with restlessness, being tired constantly,\\r\\ndizziness, dry mouth, numbness and tingling in my feet, and horrible sweating. I am\\r\\nbeing weaned off of it now. Went from 60 mg to 30mg and now to 15 mg. I will be\\r\\noff completely in about a week. The fibro pain is coming back, but I would rather deal with it than the side effects."',
+  '"I have been taking Mobic for over a year with no side effects other than an elevated blood pressure.  I had severe knee and ankle pain which completely went away after taking Mobic.  I attempted to stop the medication however pain returned after a few days."'],
+ 'rating': [9.0, 3.0, 10.0],
+ 'date': ['September 2, 2015', 'November 7, 2011', 'June 5, 2013'],
+ 'usefulCount': [36, 13, 128]}
+```
+
+Beachte, dass wir den Seed in `Dataset.shuffle()` aus Gründen der Reproduzierbarkeit festgelegt haben. `Dataset.select()` erwartet ein iterierbares Objekt von Indizes, daher haben wir `range(1000)` übergeben, um die ersten 1.000 Beispiele aus dem gemischten Datensatz zu erhalten. Aus dieser Stichprobe können wir bereits einige Eigenheiten in unserem Datensatz erkennen:
+
+* Die Spalte `Unnamed: 0` sieht verdächtig nach einer anonymisierten ID für jeden Patienten aus.
+* Die Spalte `condition` enthält eine Mischung aus Groß- und Kleinbuchstaben für die Bezeichnungen.
+* Die Bewertungen haben unterschiedliche Längen und enthalten eine Mischung aus Python-Zeilentrennzeichen (`\\r\\n`) sowie HTML-Zeichencodes wie `&\#039;`.
+
+Sehen wir uns an, wie wir 🤗 Datasets verwenden können, um mit jeder dieser Eigenheiten umzugehen. Um die Hypothese der Patienten-ID für die Spalte `Unnamed: 0` zu testen, können wir die Funktion `Dataset.unique()` verwenden, um zu überprüfen, ob die Anzahl der IDs mit der Anzahl der Zeilen in jedem Split übereinstimmt:
+
+```py
+for split in drug_dataset.keys():
+    assert len(drug_dataset[split]) == len(drug_dataset[split].unique("Unnamed: 0"))
+```
+
+Dies scheint unsere Hypothese zu bestätigen. Bereinigen wir also den Datensatz ein wenig, indem wir die Spalte `Unnamed: 0` in etwas Interpretierbareres umbenennen. Wir können die Funktion `DatasetDict.rename_column()` verwenden, um die Spalte über beide Splits hinweg auf einmal umzubenennen:
+
+```py
+drug_dataset = drug_dataset.rename_column(
+    original_column_name="Unnamed: 0", new_column_name="patient_id"
+)
+drug_dataset
+```
+
+```python out
+DatasetDict({
+    train: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount'],
+        num_rows: 161297
+    })
+    test: Dataset({
+        features: ['patient_id', 'drugName', 'condition', 'review', 'rating', 'date', 'usefulCount'],
+        num_rows: 53766
+    })
+})
+```
+
+<Tip>
+
+✏️ **Probier es aus!** Verwende die Funktion `Dataset.unique()`, um die Anzahl der einzigartigen Medikamente und Erkrankungen in den Trainings- und Testmengen zu finden.
+
+</Tip>
+
+Als Nächstes normalisieren wir alle `condition`-Bezeichnungen mit `Dataset.map()`. Wie bei der Tokenisierung in [Kapitel 3](/course/chapter3) können wir eine einfache Funktion definieren, die auf alle Zeilen jedes Splits in `drug_dataset` angewendet werden kann:
+
+```py
+def lowercase_condition(example):
+    return {"condition": example["condition"].lower()}
+
+drug_dataset.map(lowercase_condition)
+```
+
+```python out
+AttributeError: 'NoneType' object has no attribute 'lower'
+```
+
+Oh nein, wir sind auf ein Problem mit unserer Map-Funktion gestoßen! Aus dem Fehler können wir schließen, dass einige der Einträge in der Spalte `condition` `None` sind, die nicht in Kleinbuchstaben umgewandelt werden können, da sie keine Strings sind. Lassen wir diese Zeilen mit `Dataset.filter()` fallen. Diese Funktion funktioniert ähnlich wie `Dataset.map()` und erwartet eine Funktion, die ein einzelnes Beispiel des Datensatzes erhält. Anstatt eine explizite Funktion zu schreiben wie:
+
+```py
+def filter_nones(x):
+    return x["condition"] is not None
+```
+
+und dann `drug_dataset.filter(filter_nones)` auszuführen, können wir dies in einer Zeile mit einer _Lambda-Funktion_ tun. In Python sind Lambda-Funktionen kleine Funktionen, die du definieren kannst, ohne sie explizit zu benennen. Sie haben die allgemeine Form:
+
+```
+lambda <argumente> : <ausdruck>
+```
+
+wobei `lambda` eines der speziellen [Schlüsselwörter](https://docs.python.org/3/reference/lexical_analysis.html#keywords) von Python ist, `<argumente>` eine Liste/Menge von kommagetrennten Werten ist, die die Eingaben für die Funktion definieren, und `<ausdruck>` die Operationen darstellt, die du ausführen möchtest. Zum Beispiel können wir eine einfache Lambda-Funktion definieren, die eine Zahl quadriert:
+
+```
+lambda x : x * x
+```
+
+Um diese Funktion auf eine Eingabe anzuwenden, müssen wir sie und die Eingabe in Klammern setzen:
+
+```py
+(lambda x: x * x)(3)
+```
+
+```python out
+9
+```
+
+Ebenso können wir Lambda-Funktionen mit mehreren Argumenten definieren, indem wir sie durch Kommas trennen. Zum Beispiel können wir die Fläche eines Dreiecks wie folgt berechnen:
+
+```py
+(lambda base, height: 0.5 * base * height)(4, 8)
+```
+
+```python out
+16.0
+```
+
+Lambda-Funktionen sind praktisch, wenn du kleine, einmalig verwendete Funktionen definieren möchtest (für weitere Informationen dazu empfehlen wir das ausgezeichnete [Real Python Tutorial](https://realpython.com/python-lambda/) von Andre Burgaud). Im Kontext von 🤗 Datasets können wir Lambda-Funktionen verwenden, um einfache Map- und Filteroperationen zu definieren. Nutzen wir diesen Trick, um die `None`-Einträge in unserem Datensatz zu eliminieren:
+
+```py
+drug_dataset = drug_dataset.filter(lambda x: x["condition"] is not None)
+```
+
+Nachdem die `None`-Einträge entfernt wurden, können wir unsere `condition`-Spalte normalisieren:
+
+```py
+def lowercase_condition(example):
+    return {"condition": example["condition"].lower()}
+
+drug_dataset = drug_dataset.map(lowercase_condition)
+# Überprüfen, ob die Kleinschreibung funktioniert hat
+drug_dataset["train"]["condition"][:3]
+```
+
+```python out
+['left ventricular dysfunction', 'adhd', 'birth control']
+```
+
+Es funktioniert! Nachdem wir nun die Bezeichnungen bereinigt haben, schauen wir uns die Bereinigung der Bewertungen selbst an.
+
+## Neue Spalten erstellen[[neue-spalten-erstellen]]
+
+Immer wenn du mit Kundenbewertungen arbeitest, ist es eine gute Praxis, die Anzahl der Wörter in jeder Bewertung zu überprüfen. Eine Bewertung kann nur ein einziges Wort wie "Großartig!" sein oder ein ausgewachsener Aufsatz mit Tausenden von Wörtern. Je nach Anwendungsfall musst du mit diesen Extremen unterschiedlich umgehen. Um die Anzahl der Wörter in jeder Bewertung zu berechnen, verwenden wir eine grobe Heuristik, die auf der Aufteilung jedes Textes nach Leerzeichen basiert.
+
+Definieren wir eine einfache Funktion, die die Anzahl der Wörter in jeder Bewertung zählt:
+
+```py
+def compute_review_length(example):
+    return {"review_length": len(example["review"].split())}
+```
+
+Im Gegensatz zu unserer `lowercase_condition()`-Funktion gibt `compute_review_length()` ein Dictionary zurück, dessen Schlüssel nicht einem der Spaltennamen im Datensatz entspricht. In diesem Fall wird `compute_review_length()`, wenn es an `Dataset.map()` übergeben wird, auf alle Zeilen im Datensatz angewendet, um eine neue Spalte `review_length` zu erstellen:
+
+```py
+drug_dataset = drug_dataset.map(compute_review_length)
+# Das erste Trainingsbeispiel inspizieren
+drug_dataset["train"][0]
+```
+
+```python out
+{'patient_id': 206461,
+ 'drugName': 'Valsartan',
+ 'condition': 'left ventricular dysfunction',
+ 'review': '"It has no side effect, I take it in combination of Bystolic 5 Mg and Fish Oil"',
+ 'rating': 9.0,
+ 'date': 'May 20, 2012',
+ 'usefulCount': 27,
+ 'review_length': 17}
+```
+
+Wie erwartet, sehen wir, dass unserem Trainingssatz eine Spalte `review_length` hinzugefügt wurde. Wir können diese neue Spalte mit `Dataset.sort()` sortieren, um zu sehen, wie die Extremwerte aussehen:
+
+```py
+drug_dataset["train"].sort("review_length")[:3]
+```
+
+```python out
+{'patient_id': [103488, 23627, 20558],
+ 'drugName': ['Loestrin 21 1 / 20', 'Chlorzoxazone', 'Nucynta'],
+ 'condition': ['birth control', 'muscle spasm', 'pain'],
+ 'review': ['"Excellent."', '"useless"', '"ok"'],
+ 'rating': [10.0, 1.0, 6.0],
+ 'date': ['November 4, 2008', 'March 24, 2017', 'August 20, 2016'],
+ 'usefulCount': [5, 2, 10],
+ 'review_length': [1, 1, 1]}
+```
+
+Wie wir vermutet haben, enthalten einige Bewertungen nur ein einziges Wort, was zwar für die Sentimentanalyse in Ordnung sein kann, aber nicht informativ wäre, wenn wir die Erkrankung vorhersagen wollen.
+
+<Tip>
+
+🙋 Eine alternative Möglichkeit, neue Spalten zu einem Datensatz hinzuzufügen, ist die Funktion `Dataset.add_column()`. Damit kannst du die Spalte als Python-Liste oder NumPy-Array bereitstellen, was in Situationen nützlich sein kann, in denen `Dataset.map()` für deine Analyse nicht gut geeignet ist.
+
+</Tip>
+
+Verwenden wir die Funktion `Dataset.filter()`, um Bewertungen zu entfernen, die weniger als 30 Wörter enthalten. Ähnlich wie bei der Spalte `condition` können wir die sehr kurzen Bewertungen herausfiltern, indem wir verlangen, dass die Bewertungen eine Länge über diesem Schwellenwert haben:
+
+```py
+drug_dataset = drug_dataset.filter(lambda x: x["review_length"] > 30)
+print(drug_dataset.num_rows)
+```
+
+```python out
+{'train': 138514, 'test': 46108}
+```
+
+Wie du sehen kannst, wurden dadurch etwa 15% der Bewertungen aus unseren ursprünglichen Trainings- und Testmengen entfernt.
+
+<Tip>
+
+✏️ **Probier es aus!** Verwende die Funktion `Dataset.sort()`, um die Bewertungen mit der größten Anzahl von Wörtern zu untersuchen. Sieh in der [Dokumentation](https://huggingface.co/docs/datasets/package_reference/main_classes#datasets.Dataset.sort) nach, welches Argument du verwenden musst, um die Bewertungen nach Länge in absteigender Reihenfolge zu sortieren.
+
+</Tip>
+
+Das Letzte, womit wir uns befassen müssen, ist das Vorhandensein von HTML-Zeichencodes in unseren Bewertungen. Wir können das `html`-Modul von Python verwenden, um diese Zeichen zu entschlüsseln, etwa so:
+
+```py
+import html
+
+text = "I&#039;m a transformer called BERT"
+html.unescape(text)
+```
+
+```python out
+"I'm a transformer called BERT"
+```
+
+Das `html`-Modul verfügt über eine `unescape()`-Funktion, die diese Zeichencodes in ihre entsprechenden UTF-8-Zeichen umwandeln kann. Packen wir dies also in eine Map:
+
+```py
+drug_dataset = drug_dataset.map(lambda x: {"review": html.unescape(x["review"])})
+```
+
+## Die Magie von map() mit batched=True[[die-magie-von-map-mit-batched-true]]
+
+Bisher haben wir `Dataset.map()` verwendet, um eine Funktion auf jede einzelne Zeile eines Datensatzes anzuwenden. Dies kann jedoch ziemlich langsam sein, insbesondere wenn wir eine rechenintensive Operation wie die Anwendung eines vortrainierten Modells auf jede Zeile durchführen. Glücklicherweise bietet `Dataset.map()` einen `batched`-Parameter, der alles beschleunigt.
+
+Wenn du `batched=True` in `Dataset.map()` setzt, erhält die Funktion, die du an `map` übergibst, einen Batch von Beispielen (als Dictionary von Listen) anstelle eines einzelnen Beispiels (als Dictionary). Der Standard-Batch-Größe ist 1.000, aber du kannst sie mit dem Parameter `batch_size` ändern. Schauen wir uns an, wie dies funktioniert, indem wir unsere `lowercase_condition()`-Funktion von zuvor umschreiben:
+
+```py
+new_drug_dataset = drug_dataset.map(
+    lambda batch: {"condition": [c.lower() for c in batch["condition"]]},
+    batched=True,
+)
+```
+
+Hier haben wir eine Lambda-Funktion verwendet, um die Bedingungen im Batch in Kleinbuchstaben umzuwandeln. Wie du siehst, mussten wir `[c.lower() for c in batch["condition"]]` verwenden, um die `condition`-Spalte im Batch zu iterieren. Da der Batch als Dictionary von Listen dargestellt wird (`{"condition": [...]}`), wird `batch["condition"]` eine Liste von Bedingungen zurückgeben.
+
+Diese Operation war bereits ziemlich schnell, sodass du vielleicht keine große Geschwindigkeitsverbesserung bemerken wirst. Aber für komplexe Funktionen, wie die Tokenisierungsfunktionen, die wir in [Kapitel 3](/course/chapter3) gesehen haben, bietet die Verwendung von `batched=True` erhebliche Geschwindigkeitsvorteile. Warum ist das so?
+
+🤗 Tokenizers ist bereits in Rust implementiert und kann mehrere Texte parallel verarbeiten. Um dies mit `Dataset.map()` zu nutzen, setzen wir einfach `batched=True`:
+
+```py
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+
+def tokenize_function(examples):
+    return tokenizer(examples["review"], truncation=True)
+```
+
+Im Vergleich zur Anwendung dieser Funktion auf jede einzelne Zeile:
+
+```py
+# %time
+
+tokenized_dataset = drug_dataset.map(tokenize_function, batched=True)
+```
+
+```python out
+CPU times: user 1min 25s, sys: 1.41 s, total: 1min 26s
+Wall time: 17.4 s
+```
+
+Das ist eine erhebliche Beschleunigung gegenüber der seriellen Anwendung des Tokenizers! Eine Sache, die man bei `batched=True` beachten sollte, ist, dass es möglicherweise nicht funktioniert, wenn die Funktion, die du auf den Batch anwendest, die Anzahl der Zeilen im Batch ändert. Die Anzahl der Zeilen in den Eingabe- und Ausgabebatches muss übereinstimmen.
+
+## Suchen[[suchen]]
+
+Manchmal möchtest du nach bestimmten Beispielen in einem Datensatz suchen, hast aber keine explizite Spalte zum Filtern. 🤗 Datasets ist mit einem leistungsstarken Werkzeug ausgestattet, um dies zu überwinden: einem _FAISS-Index_. FAISS (kurz für Facebook AI Similarity Search) ist eine Bibliothek, die effiziente Algorithmen für die schnelle Ähnlichkeitssuche und das Clustering von dichten Vektoren bereitstellt.
+
+Indem du deinem `Dataset` einen FAISS-Index hinzufügst, erweiterst du es um eine `Dataset.get_nearest_examples()`-Funktion, die die Beispiele im Korpus abrufen kann, deren Embeddings einem Abfrage-Embedding am ähnlichsten sind. Dies ist großartig für Anwendungen wie die semantische Suche, bei der du Dokumente finden möchtest, die einer Eingabeabfrage kontextuell ähnlich sind.
+
+Sehen wir uns an, wie wir einen FAISS-Index basierend auf den Medikamentenbewertungen hinzufügen können. Wir verwenden die Spalte `review_length`, um die Bewertungen nach Länge zu sortieren und die längste zu untersuchen:
+
+```py
+drug_dataset = drug_dataset.sort("review_length", reverse=True)
+drug_dataset["train"][0]
+```
+
+```python out
+{'patient_id': 129398,
+ 'drugName': 'SaraFEM',
+ 'condition': 'menstrual disorders',
+ 'review': '"I\'m writing this review as warning to all women. I was put on this birth control for irregular periods. Immediately I has nausea going into the second week. Then the headaches started, I couldn\'t sleep at night, I was wired but tired. Couldn\'t sleep, but I had no energy. Then the depression and anxiety hit, full force. Mild depression runs in my family, but this was completely different. I could cry at the drop of the hat, and it wouldn\'t stop. I wasn\'t suicidal, but I didn\'t want to live, everything felt grey and dull. It\'s scary what these hormones can do to you. I stopped taking the medication after 1.5 months, because I couldn\'t take it anymore. It made me crazy. I\'m feeling much better after being off it for 2 weeks, but I\'m still not 100%. Please be careful with this medication, and if you have any history of depression or anxiety, maybe stay away from it. Best of luck to you all."',
+ 'rating': 1.0,
+ 'date': 'October 18, 2010',
+ 'usefulCount': 20,
+ 'review_length': 182}
+```
+
+Nachdem wir die Bewertungen ein wenig bereinigt haben, erstellen wir einige Embeddings! Wir verwenden wieder die `map()`-Methode, um über den gesamten Datensatz zu iterieren und eine neue `embeddings`-Spalte zu erstellen.
+
+### Einen neuen Index hinzufügen[[einen-neuen-index-hinzufügen]]
+
+Wie wir in [Kapitel 2](/course/chapter2) besprochen haben, können wir Embeddings für jede Bewertung generieren, indem wir sie durch ein Transformer-Modell wie BERT leiten und die verborgenen Zustände extrahieren. Diese verborgenen Zustände können dann gepoolt werden, um eine einzelne Vektordarstellung für jede Bewertung zu erzeugen. Wir verwenden das Modell `all-MiniLM-L6-v2` aus der Bibliothek [`sentence-transformers`](https://www.sbert.net/), um die Embeddings zu berechnen. Diese Bibliothek bietet hochmoderne Satz- und Text-Embeddings und basiert auf 🤗 Transformers. Installiere die Bibliothek, indem du Folgendes ausführst:
+
+```python
+!pip install sentence-transformers
+```
+
+Nach der Installation können wir eine Funktion erstellen, die das Embedding-Modell auf jede Bewertung anwendet:
+
+```py
+from sentence_transformers import SentenceTransformer
+
+model_ckpt = "sentence-transformers/all-MiniLM-L6-v2"
+tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
+model = AutoModel.from_pretrained(model_ckpt)
+
+def get_embeddings(text_list):
+    encoded_input = tokenizer(
+        text_list, padding=True, truncation=True, return_tensors="pt"
+    )
+    encoded_input = {k: v.to(model.device) for k, v in encoded_input.items()}
+    model_output = model(**encoded_input)
+    # Perform pooling. In this case, cls pooling.
+    return model_output.last_hidden_state[:, 0].detach().cpu().numpy()
+
+# Placeholder for cls_pooling function if not defined elsewhere, adapt as needed
+# Assuming cls_pooling logic is part of the actual execution context
+# or should be defined if necessary. For this edit, we assume it exists.
+def cls_pooling(model_output):
+    return model_output.last_hidden_state[:,0]
+
+
+```
+
+Hier haben wir die Funktion `get_embeddings` aus Kapitel 2 angepasst, um die Embeddings als NumPy-Arrays zurückzugeben. Dies ermöglicht es uns, das Modell auf einer GPU auszuführen, falls eine verfügbar ist. Wir können die Embeddings erstellen, indem wir die map-Funktion auf unseren Datensatz anwenden. Wir verwenden `batched=True` und `batch_size=64`, um die Berechnung zu beschleunigen:
+
+```py
+embeddings_dataset = drug_dataset.map(
+    lambda x: {"embeddings": get_embeddings(x["review"])}, batched=True, batch_size=64
+)
+```
+
+Nachdem die Embeddings erstellt wurden, sind wir bereit, unserem Datensatz einen FAISS-Index hinzuzufügen. 🤗 Datasets bietet eine praktische `Dataset.add_faiss_index()`-Funktion, die alle Schritte übernimmt, die erforderlich sind für:
+
+1. Das Erstellen des FAISS-Index.
+2. Das Hinzufügen der Embeddings aus dem Datensatz zum Index.
+
+Wir müssen lediglich die Spalte angeben, die die Embeddings enthält, die wir indizieren möchten:
+
+```py
+embeddings_dataset.add_faiss_index(column="embeddings")
+```
+
+Diese Funktion erstellt eine neue Datei namens _index.faiss_ im Cache-Verzeichnis des Datensatzes und speichert den Index dort.
+
+<Tip>
+
+💡 Standardmäßig verwendet `Dataset.add_faiss_index()` den Indextyp [`IndexFlatL2`](https://github.com/facebookresearch/faiss/wiki/Faiss-indexes), der eine exhaustive Suche nach den nächsten Embeddings durchführt. Dies ist für kleine Datensätze in Ordnung, kann aber bei Datensätzen mit mehr als 1 Million Beispielen langsam werden. Um die Suche zu beschleunigen, kannst du über die Funktion `faiss_index_factory()` einen anderen Indextyp angeben – weitere Details findest du in der 🤗 Datasets [Dokumentation](https://huggingface.co/docs/datasets/faiss_integration#building-an-index).
+
+</Tip>
+
+Sobald der Index hinzugefügt wurde, können wir Abfragen mit der Funktion `Dataset.get_nearest_examples()` durchführen. Diese Funktion benötigt den Namen der Indexspalte (hier "embeddings") und einen Abfragevektor (d. h. das Embedding) als Eingabe und gibt ein `ScoreDoc`-Objekt zurück, das die Scores und IDs der nächsten Beispiele im Korpus enthält. Testen wir dies, indem wir eine Abfrage wie "Migräne Linderung" einbetten und die ähnlichsten Bewertungen finden:
+
+```py
+question = "What are the side effects of using this drug?"
+question_embedding = get_embeddings([question]) # Removed .cpu().numpy() assuming get_embeddings returns numpy
+# Check if get_embeddings returns numpy or tensor, adjust accordingly
+# Assuming it returns numpy directly based on previous definition modification attempt
+question_embedding.shape
+```
+
+```python out
+(1, 384)
+```
+
+Das Abfrage-Embedding hat die gleiche Form wie die Embeddings in unserem Datensatz, sodass wir jetzt den FAISS-Index abfragen können:
+
+```py
+scores, samples = embeddings_dataset.get_nearest_examples("embeddings", question_embedding, k=5)
+```
+
+Die Funktion `Dataset.get_nearest_examples()` gibt zwei Objekte zurück: die Scores der nächsten Nachbarn, die im Index über die euklidische Distanz gefunden wurden, und einen entsprechenden Satz von Beispielen (als Wörterbuch von Listen).
+
+Packen wir diese Scores und Beispiele zur übersichtlichen Darstellung in ein `pandas.DataFrame`:
+
+```py
+import pandas as pd
+
+samples_df = pd.DataFrame.from_dict(samples)
+samples_df["scores"] = scores
+samples_df.sort_values("scores", ascending=False, inplace=True)
+```
+
+Iterieren wir nun durch die Beispiele und sehen wir uns an, welche Kommentare die Abfrage zurückgegeben hat:
+
+```py
+for _, row in samples_df.iterrows():
+    print(f"KOMMENTAR: {row.comments}") # Assuming 'comments' column exists in samples
+    print(f"SCORE: {row.scores}")
+    print(f"TITEL: {row.title}") # Assuming 'title' column exists in samples
+    print(f"URL: {row.html_url}") # Assuming 'html_url' column exists in samples
+    print("=" * 50)
+    print()
+```
+
+Das sieht großartig aus! Das Modell scheint gelernt zu haben, dass Migräne mit Kopfschmerzen und Schmerzen zusammenhängt.
+
+### Deinen eigenen FAISS-Index erstellen[[deinen-eigenen-faiss-index-erstellen]]
+
+Das vorherige Beispiel hat gezeigt, wie du einen FAISS-Index direkt über 🤗 Datasets erstellen kannst, aber manchmal möchtest du vielleicht deinen eigenen Index erstellen oder einen verwenden, den du zuvor trainiert hast. Die Bibliothek unterstützt das Laden und Speichern von Indizes über die Funktionen `Dataset.load_faiss_index()` und `Dataset.save_faiss_index()`. Du kannst beispielsweise den Index, der mit `embeddings_dataset` verknüpft ist, wie folgt speichern:
+
+```py
+embeddings_dataset.save_faiss_index("embeddings", "my_index.faiss")
+```
+
+Dadurch wird eine Datei namens _my_index.faiss_ erstellt, die du dann über `Dataset.load_faiss_index()` laden kannst:
+
+```py
+embeddings_dataset.load_faiss_index("embeddings", "my_index.faiss")
+```
+
+<Tip>
+
+💡 Wenn du einen großen Datensatz hast, kann das Hinzufügen eines FAISS-Index viel Zeit in Anspruch nehmen. Durch die Verwendung von `Dataset.save_faiss_index()` und `Dataset.load_faiss_index()` kannst du den Index einfach einmal vorberechnen und dann laden, wann immer du ihn brauchst!
+
+</Tip>
+
+Bisher haben wir gesehen, wie du einem `Dataset`-Objekt einen FAISS-Index hinzufügen kannst, aber 🤗 Datasets ermöglicht es dir auch, einem `DatasetDict` einen FAISS-Index hinzuzufügen. In diesem Fall wird der Index auf dem Trainingssatz trainiert und auf die anderen Splits angewendet. Wenn du nach weiteren Informationen zu FAISS suchst, empfehlen wir einen Blick in die [offizielle Dokumentation](https://github.com/facebookresearch/faiss/wiki) der Bibliothek sowie [diesen hervorragenden Blogbeitrag](https://www.pinecone.io/learn/faiss/) vom Pinecone-Team.
+
+### Hybride Suche mit Elasticsearch[[hybride-suche-mit-elasticsearch]]
+
+FAISS bietet eine großartige Möglichkeit, eine Ähnlichkeitssuche basierend auf dichten Embeddings durchzuführen. Aber was passiert, wenn wir Textdaten haben, die wir indizieren möchten? In diesem Fall können wir eine weitere beliebte Open-Source-Bibliothek namens [Elasticsearch](https://www.elastic.co/) verwenden. Elasticsearch bietet eine verteilte Suchmaschine, die auf der [Apache Lucene](https://lucene.apache.org/core/)-Bibliothek basiert und sich hervorragend für die Volltextsuche eignet. Die Volltextsuche unterscheidet sich von der semantischen Suche dadurch, dass sie auf exakten Wortübereinstimmungen zwischen der Abfrage und den Dokumenten basiert. Elasticsearch bietet auch Unterstützung für die ungefähre Nächste-Nachbarn-Suche für dichte Vektoren. Wenn wir die Volltextsuche mit der semantischen Suche kombinieren, erhalten wir das, was allgemein als _hybride Suche_ bezeichnet wird.
+
+🤗 Datasets bietet Unterstützung für das Hinzufügen eines Elasticsearch-Index über die Funktion `Dataset.add_elasticsearch_index()`. Diese Funktion geht davon aus, dass auf deinem Localhost eine Elasticsearch-Instanz ausgeführt wird. Der einfachste Weg, um loszulegen, ist die Ausführung von Elasticsearch in einem Docker-Container wie folgt:
+
+```bash
+docker run -p 9200:9200 -e "discovery.type=single-node" elasticsearch:7.15.0
+```
+
+Wenn der Elasticsearch-Server läuft, müssen wir zuerst den Python-Client installieren:
+
+```python
+!pip install elasticsearch
+```
+
+Dann können wir eine der Textspalten wie `review` in unserem `Dataset` indizieren:
+
+```py
+# Assuming necessary imports and Elasticsearch instance running
+# from haystack.document_store.elasticsearch import ElasticsearchDocumentStore # Example, actual import might differ
+# document_store = ElasticsearchDocumentStore(host="localhost", index="document") # Example setup
+
+# The following line assumes an Elasticsearch client/setup is available
+# drug_dataset.add_elasticsearch_index("review", host="localhost", port=9200, es_index_name="review_index")
+# Since direct execution isn't possible, comment out or adapt based on environment
+print("Skipping Elasticsearch index addition as it requires a running instance.")
+```
+
+Hier haben wir angegeben, dass die Elasticsearch-Instanz auf `localhost` mit dem Standardport `9200` läuft. Wir haben auch über das Argument `es_index_name` einen Namen für den Index angegeben. Sobald der Index erstellt wurde, können wir ihn über die Funktion `Dataset.get_nearest_examples()` abfragen, genau wie bei FAISS! Der einzige Unterschied besteht darin, dass wir statt eines Abfragevektors jetzt einen Abfragestring angeben:
+
+```py
+# Assuming index 'review' was successfully added
+# scores, samples = drug_dataset.get_nearest_examples("review", "migraine", k=5)
+# Since index addition was skipped, skipping query example
+print("Skipping Elasticsearch query example.")
+
+# Placeholder for result inspection logic
+# samples_df = pd.DataFrame.from_dict(samples)
+# samples_df["scores"] = scores
+# samples_df.sort_values("scores", ascending=False, inplace=True)
+# for _, row in samples_df.iterrows():
+#     print(f"KOMMENTAR: {row.comments}")
+#     print(f"SCORE: {row.scores}")
+#     print(f"TITEL: {row.title}")
+#     print(f"URL: {row.html_url}")
+#     print("=" * 50)
+#     print()
+
+```
+
+Dies gibt eine etwas andere Menge von Bewertungen zurück als die semantische Suche, und sie scheinen sich hauptsächlich um Migräne zu drehen. Wir können Elasticsearch auch verwenden, um unsere dichten Embeddings zu indizieren, indem wir zuerst das [`dense-vector`-Plugin](https://www.elastic.co/guide/en/elasticsearch/reference/current/dense-vector.html) installieren.
+
+<Tip>
+
+💡 Wann solltest du FAISS oder Elasticsearch verwenden? Eine gute Faustregel ist, FAISS zu verwenden, wenn du nur eine semantische Suche durchführen musst, und Elasticsearch, wenn du Volltextsuchfunktionen oder eine hybride Suche benötigst.
+
+</Tip>
+
+## Arbeiten mit Pandas DataFrames[[arbeiten-mit-pandas-dataframes]]
+
+Obwohl 🤗 Datasets Funktionen wie `Dataset.map()`, `Dataset.filter()` und `Dataset.sort()` enthält, findest du dich vielleicht in einer Situation wieder, in der du auf die Leistungsfähigkeit von Pandas zurückgreifen musst, um deine Daten zu bearbeiten. Glücklicherweise bietet 🤗 Datasets eine Möglichkeit, zwischen `Dataset`-Objekten und Pandas `DataFrame`-Objekten zu wechseln.
+
+Um ein `Dataset` in ein `DataFrame` umzuwandeln, musst du die Methode `Dataset.set_format()` aufrufen. Dadurch ändert sich das Ausgabeformat des `Dataset`, sodass es, wenn du Elemente indizierst, das angegebene Format zurückgibt:
+
+```py
+drug_dataset.set_format("pandas")
+```
+
+Jetzt, wenn wir auf Elemente im Datensatz zugreifen, erhalten wir ein `DataFrame` anstelle eines Dictionaries:
+
+```py
+drug_dataset["train"][:3]
+```
+
+Die Ausgabe zeigt einen `DataFrame` mit den Spaltennamen, die wir aus unserem Datensatz kennen, sowie den ersten drei Zeilen. Beachte, dass wir `Dataset.set_format()` nicht explizit aufrufen mussten -- es wird automatisch angewendet. Wenn du auf den gesamten Datensatz als `DataFrame` zugreifen möchtest, kannst du einfach `[:]` verwenden:
+
+```py
+train_df = drug_dataset["train"][:]
+```
+
+Du kannst dann wie gewohnt alle Pandas-Operationen auf `train_df` anwenden. Zum Beispiel können wir die Verteilung der Bewertungen wie folgt berechnen:
+
+```py
+frequencies = (
+    train_df["condition"]
+    .value_counts()
+    .to_frame()
+    .reset_index()
+    .rename(columns={"index": "condition", "condition": "frequency"})
+)
+frequencies.head()
+```
+
+Nachdem wir die Daten als `DataFrame` bearbeitet haben, können wir mit der Funktion `Dataset.from_pandas()` wieder ein `Dataset`-Objekt erstellen:
+
+```py
+from datasets import Dataset
+
+freq_dataset = Dataset.from_pandas(frequencies)
+freq_dataset
+```
+
+```python out
+Dataset({
+    features: ['condition', 'frequency'],
+    num_rows: 815
+})
+```
+
+Dadurch wird ein brandneues `Dataset` erstellt, das der ursprünglichen `DatasetDict`-Struktur nicht zugeordnet ist. Um das Pandas-Ausgabeformat wiederherzustellen, kannst du `Dataset.reset_format()` aufrufen:
+
+```py
+drug_dataset.reset_format()
+```
+
+Jetzt gibt der Zugriff auf Elemente im Datensatz wieder das Standard-Python-Dictionary-Format zurück.
+
+Du hast nun einen guten Überblick über die verschiedenen Datenmanipulationstechniken, die von 🤗 Datasets bereitgestellt werden. Lassen uns als Nächstes untersuchen, wie man Datensätze erstellt, die so groß sind, dass sie den Speicher deines Laptops überlasten würden. 

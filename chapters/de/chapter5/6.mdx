@@ -1,0 +1,413 @@
+<FrameworkSwitchCourse {fw} />
+
+# Semantische Suche mit FAISS[[semantische-suche-mit-faiss]]
+
+{#if fw === 'pt'}
+
+<CourseFloatingBanner chapter={5}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_pt.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_pt.ipynb"},
+]} />
+
+{:else}
+
+<CourseFloatingBanner chapter={5}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_tf.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter5/section6_tf.ipynb"},
+]} />
+
+{/if}
+
+In [Abschnitt 5](/course/chapter5/5) haben wir einen Datensatz aus GitHub Issues und Kommentaren aus dem 🤗 Datasets-Repository erstellt. In diesem Abschnitt werden wir diese Informationen nutzen, um eine Suchmaschine zu bauen, die uns helfen kann, Antworten auf unsere dringendsten Fragen zur Bibliothek zu finden!
+
+<Youtube id="OATCgQtNX2o"/>
+
+## Embeddings für die semantische Suche verwenden[[embeddings-für-die-semantische-suche-verwenden]]
+
+Wie wir in [Kapitel 1](/course/chapter1) gesehen haben, stellen Transformer-basierte Sprachmodelle jedes Token in einem Textabschnitt als _Embedding-Vektor_ dar. Es stellt sich heraus, dass man die einzelnen Embeddings "poolen" kann, um eine Vektordarstellung für ganze Sätze, Absätze oder (in einigen Fällen) Dokumente zu erstellen. Diese Embeddings können dann verwendet werden, um ähnliche Dokumente im Korpus zu finden, indem die Punktprodukt-Ähnlichkeit (oder eine andere Ähnlichkeitsmetrik) zwischen jedem Embedding berechnet und die Dokumente mit der größten Überlappung zurückgegeben werden.
+
+In diesem Abschnitt werden wir Embeddings verwenden, um eine semantische Suchmaschine zu entwickeln. Diese Suchmaschinen bieten mehrere Vorteile gegenüber herkömmlichen Ansätzen, die auf dem Abgleich von Schlüsselwörtern in einer Abfrage mit den Dokumenten basieren.
+
+<div class="flex justify-center">
+<img class="block dark:hidden" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter5/semantic-search.svg" alt="Semantische Suche."/>
+<img class="hidden dark:block" src="https://huggingface.co/datasets/huggingface-course/documentation-images/resolve/main/en/chapter5/semantic-search-dark.svg" alt="Semantische Suche."/>
+</div>
+
+## Laden und Vorbereiten des Datensatzes[[laden-und-vorbereiten-des-datensatzes]]
+
+Als Erstes müssen wir unseren Datensatz mit GitHub Issues herunterladen, also verwenden wir wie gewohnt die Funktion `load_dataset()`:
+
+```py
+from datasets import load_dataset
+
+issues_dataset = load_dataset("lewtun/github-issues", split="train")
+issues_dataset
+```
+
+```python out
+Dataset({
+    features: ['url', 'repository_url', 'labels_url', 'comments_url', 'events_url', 'html_url', 'id', 'node_id', 'number', 'title', 'user', 'labels', 'state', 'locked', 'assignee', 'assignees', 'milestone', 'comments', 'created_at', 'updated_at', 'closed_at', 'author_association', 'active_lock_reason', 'pull_request', 'body', 'performed_via_github_app', 'is_pull_request'],
+    num_rows: 2855
+})
+```
+
+Hier haben wir den standardmäßigen `train`-Split in `load_dataset()` angegeben, sodass ein `Dataset` anstelle eines `DatasetDict` zurückgegeben wird. Als Erstes müssen wir die Pull Requests herausfiltern, da diese in der Regel selten zur Beantwortung von Benutzeranfragen verwendet werden und Rauschen in unserer Suchmaschine verursachen. Wie inzwischen bekannt sein sollte, können wir die Funktion `Dataset.filter()` verwenden, um diese Zeilen in unserem Datensatz auszuschließen. Wenn wir schon dabei sind, filtern wir auch Zeilen ohne Kommentare heraus, da diese keine Antworten auf Benutzeranfragen liefern:
+
+```py
+issues_dataset = issues_dataset.filter(
+    lambda x: (x["is_pull_request"] == False and len(x["comments"]) > 0)
+)
+issues_dataset
+```
+
+```python out
+Dataset({
+    features: ['url', 'repository_url', 'labels_url', 'comments_url', 'events_url', 'html_url', 'id', 'node_id', 'number', 'title', 'user', 'labels', 'state', 'locked', 'assignee', 'assignees', 'milestone', 'comments', 'created_at', 'updated_at', 'closed_at', 'author_association', 'active_lock_reason', 'pull_request', 'body', 'performed_via_github_app', 'is_pull_request'],
+    num_rows: 771
+})
+```
+
+Wir sehen, dass unser Datensatz viele Spalten enthält, von denen wir die meisten nicht benötigen, um unsere Suchmaschine zu bauen. Aus Suchperspektive sind die informativsten Spalten `title`, `body` und `comments`, während `html_url` uns einen Link zurück zum ursprünglichen Issue liefert. Verwenden wir die Funktion `Dataset.remove_columns()`, um den Rest zu löschen:
+
+```py
+columns = issues_dataset.column_names
+columns_to_keep = ["title", "body", "html_url", "comments"]
+columns_to_remove = set(columns_to_keep).symmetric_difference(columns)
+issues_dataset = issues_dataset.remove_columns(columns_to_remove)
+issues_dataset
+```
+
+```python out
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body'],
+    num_rows: 771
+})
+```
+
+Um unsere Embeddings zu erstellen, ergänzen wir jeden Kommentar um den Titel und den Textkörper des Issues, da diese Felder oft nützliche Kontextinformationen enthalten. Da unsere `comments`-Spalte derzeit eine Liste von Kommentaren für jedes Issue ist, müssen wir die Spalte "explodieren", sodass jede Zeile aus einem `(html_url, title, body, comment)`-Tupel besteht. In Pandas können wir dies mit der [`DataFrame.explode()`-Funktion](https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.DataFrame.explode.html) tun, die für jedes Element in einer listenähnlichen Spalte eine neue Zeile erstellt und dabei alle anderen Spaltenwerte repliziert. Um dies in Aktion zu sehen, wechseln wir zunächst zum Pandas `DataFrame`-Format:
+
+```py
+issues_dataset.set_format("pandas")
+df = issues_dataset[:]
+```
+
+Wenn wir die erste Zeile in diesem `DataFrame` untersuchen, sehen wir, dass diesem Issue vier Kommentare zugeordnet sind:
+
+```py
+df["comments"][0].tolist()
+```
+
+```python out
+['the bug code locate in ：\\r\\n    if data_args.task_name is not None:\\r\\n        # Downloading and loading a dataset from the hub.\\r\\n        datasets = load_dataset("glue", data_args.task_name, cache_dir=model_args.cache_dir)',
+ 'Hi @jinec,\\r\\n\\r\\nFrom time to time we get this kind of `ConnectionError` coming from the github.com website: https://raw.githubusercontent.com\\r\\n\\r\\nNormally, it should work if you wait a little and then retry.\\r\\n\\r\\nCould you please confirm if the problem persists?',
+ 'cannot connect，even by Web browser，please check that  there is some  problems。',
+ 'I can access https://raw.githubusercontent.com/huggingface/datasets/1.7.0/datasets/glue/glue.py without problem...']
+```
+
+Wenn wir `df` explodieren, erwarten wir eine Zeile für jeden dieser Kommentare. Prüfen wir, ob das der Fall ist:
+
+```py
+comments_df = df.explode("comments", ignore_index=True)
+comments_df.head(4)
+```
+
+<table border="1" class="dataframe" style="table-layout: fixed; word-wrap:break-word; width: 100%;">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>html_url</th>
+      <th>title</th>
+      <th>comments</th>
+      <th>body</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>the bug code locate in ：\\r\\n    if data_args.task_name is not None...</td>
+      <td>Hello,\\r\\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>Hi @jinec,\\r\\n\\r\\nFrom time to time we get this kind of `ConnectionError` coming from the github.com website: https://raw.githubusercontent.com...</td>
+      <td>Hello,\\r\\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>cannot connect，even by Web browser，please check that  there is some  problems。</td>
+      <td>Hello,\\r\\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+    <tr>
+      <th>3</th>
+      <td>https://github.com/huggingface/datasets/issues/2787</td>
+      <td>ConnectionError: Couldn't reach https://raw.githubusercontent.com</td>
+      <td>I can access https://raw.githubusercontent.com/huggingface/datasets/1.7.0/datasets/glue/glue.py without problem...</td>
+      <td>Hello,\\r\\nI am trying to run run_glue.py and it gives me this error...</td>
+    </tr>
+  </tbody>
+</table>
+
+Großartig, wir sehen, dass die Zeilen repliziert wurden, wobei die `comments`-Spalte die einzelnen Kommentare enthält! Nachdem wir mit Pandas fertig sind, können wir schnell wieder zu einem `Dataset` wechseln, indem wir den `DataFrame` in den Speicher laden:
+
+```py
+from datasets import Dataset
+
+comments_dataset = Dataset.from_pandas(comments_df)
+comments_dataset
+```
+
+```python out
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body'],
+    num_rows: 2842
+})
+```
+
+Okay, das hat uns ein paar Tausend Kommentare zum Arbeiten gegeben!
+
+
+<Tip>
+
+✏️ **Probier es aus!** Versuche, die `comments`-Spalte von `issues_dataset` mit `Dataset.map()` zu explodieren, _ohne_ auf Pandas zurückzugreifen. Das ist etwas knifflig; der Abschnitt ["Batch Mapping"](https://huggingface.co/docs/datasets/about_map_batch#batch-mapping) der 🤗 Datasets-Dokumentation könnte für diese Aufgabe nützlich sein.
+
+</Tip>
+
+Nachdem wir nun einen Kommentar pro Zeile haben, erstellen wir eine neue Spalte `comments_length`, die die Anzahl der Wörter pro Kommentar enthält:
+
+```py
+comments_dataset = comments_dataset.map(
+    lambda x: {"comment_length": len(x["comments"].split())}
+)
+```
+
+Wir können diese neue Spalte verwenden, um kurze Kommentare herauszufiltern, die typischerweise Dinge wie "cc @lewtun" oder "Danke!" enthalten, die für unsere Suchmaschine nicht relevant sind. Es gibt keine genaue Zahl, die für den Filter ausgewählt werden muss, aber etwa 15 Wörter scheinen ein guter Anfang zu sein:
+
+```py
+comments_dataset = comments_dataset.filter(lambda x: x["comment_length"] > 15)
+comments_dataset
+```
+
+```python out
+Dataset({
+    features: ['html_url', 'title', 'comments', 'body', 'comment_length'],
+    num_rows: 2098
+})
+```
+
+Nachdem wir unseren Datensatz etwas bereinigt haben, verketten wir den Issue-Titel, die Beschreibung und die Kommentare in einer neuen Spalte `text`. Wie üblich schreiben wir eine einfache Funktion, die wir an `Dataset.map()` übergeben können:
+
+```py
+def concatenate_text(examples):
+    return {
+        "text": examples["title"]
+        + " \n "
+        + examples["body"]
+        + " \n "
+        + examples["comments"]
+    }
+
+comments_dataset = comments_dataset.map(concatenate_text)
+```
+
+Wir sind endlich bereit, einige Embeddings zu erstellen! Schauen wir uns das an.
+
+## Text-Embeddings erstellen[[text-embeddings-erstellen]]
+
+Wir haben in [Kapitel 2](/course/chapter2) gesehen, dass wir Token-Embeddings mit der `AutoModel`-Klasse erhalten können. Alles, was wir tun müssen, ist einen geeigneten Checkpoint auszuwählen, von dem das Modell geladen werden soll. Glücklicherweise gibt es eine Bibliothek namens `sentence-transformers`, die sich der Erstellung von Embeddings widmet. Wie in der [Dokumentation](https://www.sbert.net/examples/applications/semantic-search/README.html#symmetric-vs-asymmetric-semantic-search) der Bibliothek beschrieben, ist unser Anwendungsfall ein Beispiel für _asymmetrische semantische Suche_, da wir eine kurze Abfrage haben, deren Antwort wir in einem längeren Dokument, wie einem Issue-Kommentar, finden möchten. Die praktische [Modellübersichtstabelle](https://www.sbert.net/docs/pretrained_models.html#model-overview) in der Dokumentation zeigt, dass der Checkpoint `multi-qa-mpnet-base-dot-v1` die beste Leistung für die semantische Suche aufweist, also werden wir diesen für unsere Anwendung verwenden. Wir laden auch den Tokenizer mit demselben Checkpoint:
+
+{#if fw === 'pt'}
+
+```py
+from transformers import AutoTokenizer, AutoModel
+import torch
+
+model_ckpt = "sentence-transformers/multi-qa-mpnet-base-dot-v1"
+tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
+model = AutoModel.from_pretrained(model_ckpt)
+
+# Modell auf GPU verschieben, falls verfügbar
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)
+```
+
+{:else}
+
+```py
+from transformers import AutoTokenizer, TFAutoModel
+import tensorflow as tf
+
+model_ckpt = "sentence-transformers/multi-qa-mpnet-base-dot-v1"
+tokenizer = AutoTokenizer.from_pretrained(model_ckpt)
+model = TFAutoModel.from_pretrained(model_ckpt, from_pt=True) # from_pt=True lädt PyTorch-Gewichte
+```
+
+{/if}
+
+Als Nächstes definieren wir eine Funktion, die die Embeddings für einen Text-Batch berechnet. Eine gängige Methode zur Erstellung von Satz-Embeddings besteht darin, ein sogenanntes _Pooling_ über die letzten versteckten Zustände des Modells durchzuführen. Viele Pooling-Strategien sind möglich; eine gängige ist es, die versteckten Zustände mithilfe der Aufmerksamkeitsmaske als Gewichtung _CLS-Pooling_ durchzuführen. In unserem Fall werden wir einfach den Durchschnitt der versteckten Zustände bilden:
+
+{#if fw === 'pt'}
+
+```py
+def cls_pooling(model_output):
+    return model_output.last_hidden_state[:, 0]
+
+def get_embeddings(text_list):
+    encoded_input = tokenizer(
+        text_list, padding=True, truncation=True, return_tensors="pt"
+    )
+    encoded_input = {k: v.to(device) for k, v in encoded_input.items()}
+    model_output = model(**encoded_input)
+    return cls_pooling(model_output)
+```
+
+Testen wir diese Funktion mit dem ersten Text in unserem Korpus:
+
+```py
+embedding = get_embeddings(comments_dataset["text"][0])
+embedding.shape
+```
+
+```python out
+torch.Size([1, 768])
+```
+
+{:else}
+
+```py
+def cls_pooling(outputs):
+    return outputs.last_hidden_state[:, 0]
+
+def get_embeddings(text_list):
+    encoded_input = tokenizer(
+        text_list, padding=True, truncation=True, return_tensors="tf"
+    )
+    outputs = model(encoded_input)
+    return cls_pooling(outputs)
+```
+
+Testen wir diese Funktion mit dem ersten Text in unserem Korpus:
+
+```py
+embedding = get_embeddings(comments_dataset["text"][0])
+embedding.shape
+```
+
+```python out
+TensorShape([1, 768])
+```
+
+{/if}
+
+Das sieht richtig aus -- wir haben einen 768-dimensionalen Vektor für jeden Text erhalten! Wenden wir nun unsere `get_embeddings()`-Funktion auf den gesamten Datensatz mit `Dataset.map()` an. Wir fügen eine neue Spalte `embeddings` hinzu, die die Vektoren enthält:
+
+```py
+embeddings_dataset = comments_dataset.map(
+    lambda x: {"embeddings": get_embeddings(x["text"]).detach().cpu().numpy()[0]}
+)
+```
+
+## FAISS zur effizienten Ähnlichkeitssuche verwenden[[faiss-zur-effizienten-ähnlichkeitssuche-verwenden]]
+
+Jetzt, da wir einen Datensatz mit Embeddings für alle unsere Issues und Kommentare haben, brauchen wir eine Möglichkeit, diese zu durchsuchen. Wir könnten einfach die Kosinus-Ähnlichkeit zwischen einer Abfrage und jedem Embedding im Korpus berechnen, aber dies wäre sehr langsam, wenn wir Millionen oder Milliarden von Dokumenten hätten.
+
+Eine viel schnellere Methode basiert auf _Approximate Nearest Neighbor_-(ANN-)Suche, die versucht, einen kleinen Kompromiss bei der Genauigkeit der Suche zugunsten einer massiven Beschleunigung einzugehen. In 🤗 Datasets haben wir Unterstützung für effiziente ANN-Indizes über die [FAISS](https://github.com/facebookresearch/faiss)-Bibliothek (ausgesprochen "face") integriert. FAISS bietet verschiedene Indizierungsmethoden, die die Suche über Millionen oder sogar Milliarden von Vektoren ermöglichen.
+
+Wir können FAISS verwenden, indem wir die Methode `Dataset.add_faiss_index()` aufrufen. Diese Methode fügt dem Datensatz einen Index hinzu, der auf den Vektoren in einer bestimmten Spalte basiert:
+
+```py
+embeddings_dataset.add_faiss_index(column="embeddings")
+```
+
+Sobald der Index erstellt ist, können wir eine Suche durchführen, indem wir die Methode `Dataset.get_nearest_examples()` verwenden. Diese Methode nimmt eine Abfrage-Embedding und die Anzahl der Beispiele entgegen, die zurückgegeben werden sollen. Wir können unsere `get_embeddings()`-Funktion verwenden, um die Abfrage zu vektorisieren, bevor wir sie an `Dataset.get_nearest_examples()` übergeben. Probieren wir dies mit einer Beispielabfrage aus:
+
+```py
+question = "How can I load a dataset offline?"
+question_embedding = get_embeddings([question]).cpu().detach().numpy()
+question_embedding.shape
+```
+
+```python out
+(1, 768)
+```
+
+Jetzt müssen wir dieses Abfrage-Embedding nur noch an `Dataset.get_nearest_examples()` übergeben, um die 5 ähnlichsten Beispiele zu finden:
+
+```py
+scores, samples = embeddings_dataset.get_nearest_examples(
+    "embeddings", question_embedding, k=5
+)
+```
+
+Die Methode `Dataset.get_nearest_examples()` gibt ein Tupel aus Scores und entsprechenden Beispielen zurück (als Dictionary). Sammeln wir diese in einem `DataFrame`, damit wir die Ergebnisse untersuchen können:
+
+```py
+import pandas as pd
+
+samples_df = pd.DataFrame.from_dict(samples)
+samples_df["scores"] = scores
+samples_df.sort_values("scores", ascending=False, inplace=True)
+```
+
+Drucken wir nun den Text und die URLs der ähnlichsten Beispiele aus:
+
+```py
+for _, row in samples_df.iterrows():
+    print(f"COMMENT: {row.comments}")
+    print(f"SCORE: {row.scores}")
+    print(f"TITLE: {row.title}")
+    print(f"URL: {row.html_url}")
+    print("=" * 50)
+    print()
+```
+
+```python out
+COMMENT: Requiring online connection is a severe barrier for our users...
+SCORE: 25.505046844482422
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+COMMENT: The local dataset builders...
+SCORE: 24.555540084838867
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+COMMENT: I opened a PR that allows to reload modules that have already been loaded once...
+SCORE: 24.148956298828125
+TITLE: Add option to reload datasets script each time load_dataset is called
+URL: https://github.com/huggingface/datasets/pull/1038
+==================================================
+
+COMMENT: I understand the reasons for the offline setting...
+SCORE: 23.652145385742188
+TITLE: Discussion using datasets in offline mode
+URL: https://github.com/huggingface/datasets/issues/824
+==================================================
+
+COMMENT: You can set the environment variable `HF_DATASETS_OFFLINE=1` ...
+SCORE: 23.447189331054688
+TITLE: Is there a way to use load_metric("rouge") offline ?
+URL: https://github.com/huggingface/datasets/issues/1055
+==================================================
+```
+
+Großartig -- die obersten Suchergebnisse beziehen sich alle auf das Offline-Laden von Datensätzen! Du kannst diese Technik jetzt anwenden, um deine eigenen semantischen Suchanwendungen zu erstellen!
+
+<Tip>
+
+✏️ **Probier es aus!** Experimentiere mit verschiedenen Abfragen, um zu sehen, welche Arten von Fragen die Suchmaschine beantworten kann. Wie würdest du die Suchmaschine verbessern? Zum Beispiel könntest du versuchen, einen anderen Satz von Embeddings zu verwenden, um den Text darzustellen, wie z. B. die Ausgabe des `hidden_state`-Poolings. Alternativ könntest du den Text weiter bereinigen, indem du Markdown- und Code-Snippets entfernst.
+
+</Tip>
+
+Damit ist unser Ausflug in die fortgeschrittene Nutzung von 🤗 Datasets abgeschlossen. Im nächsten Kapitel werden wir mehr über Tokenizer erfahren, insbesondere wie man sie trainiert und mit ihnen Datensätze tokenisiert, die zu groß sind, um in den Speicher zu passen. 

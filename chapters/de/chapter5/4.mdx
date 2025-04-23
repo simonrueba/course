@@ -1,0 +1,261 @@
+# Big Data? 🤗 Datasets zur Rettung![[big-data-datasets-zur-rettung]]
+
+<CourseFloatingBanner chapter={5}
+  classNames="absolute z-10 right-0 top-0"
+  notebooks={[
+    {label: "Google Colab", value: "https://colab.research.google.com/github/huggingface/notebooks/blob/master/course/en/chapter5/section4.ipynb"},
+    {label: "Aws Studio", value: "https://studiolab.sagemaker.aws/import/github/huggingface/notebooks/blob/master/course/en/chapter5/section4.ipynb"},
+]} />
+
+Heutzutage ist es nicht ungewöhnlich, mit Multi-Gigabyte-Datensätzen zu arbeiten, besonders wenn du planst, einen Transformer wie BERT oder GPT-2 von Grund auf vorzutrainieren. In diesen Fällen kann sogar das _Laden_ der Daten eine Herausforderung sein. Zum Beispiel besteht der WebText-Korpus, der zum Vortrainieren von GPT-2 verwendet wurde, aus über 8 Millionen Dokumenten und 40 GB Text – das Laden in den Arbeitsspeicher deines Laptops würde ihm wahrscheinlich einen Herzinfarkt bescheren!
+
+Glücklicherweise wurde 🤗 Datasets entwickelt, um diese Einschränkungen zu überwinden. Es befreit dich von Speicherverwaltungsproblemen, indem es Datensätze als _memory-mapped_ Dateien behandelt, und von Festplattenlimits durch das _Streaming_ der Einträge in einem Korpus.
+
+<Youtube id="JwISwTCPPWo"/>
+
+In diesem Abschnitt werden wir diese Funktionen von 🤗 Datasets mit einem riesigen 825 GB Korpus namens [The Pile](https://pile.eleuther.ai) untersuchen. Los geht's!
+
+## Was ist The Pile?[[was-ist-the-pile]]
+
+The Pile ist ein englischer Textkorpus, der von [EleutherAI](https://www.eleuther.ai) für das Training großer Sprachmodelle erstellt wurde. Er umfasst eine vielfältige Palette von Datensätzen, die wissenschaftliche Artikel, GitHub-Code-Repositories und gefilterten Webtext umfassen. Der Trainingskorpus ist in [14 GB Chunks](https://the-eye.eu/public/AI/pile/) verfügbar, und du kannst auch mehrere der [einzelnen Komponenten](https://the-eye.eu/public/AI/pile_preliminary_components/) herunterladen. Werfen wir zunächst einen Blick auf den PubMed Abstracts-Datensatz, einen Korpus von Abstracts aus 15 Millionen biomedizinischen Publikationen auf [PubMed](https://pubmed.ncbi.nlm.nih.gov/). Der Datensatz liegt im [JSON Lines-Format](https://jsonlines.org) vor und ist mit der `zstandard`-Bibliothek komprimiert. Zuerst müssen wir diese installieren:
+
+```py
+!pip install zstandard
+```
+
+Als Nächstes können wir den Datensatz mit der Methode für entfernte Dateien laden, die wir in [Abschnitt 2](/course/chapter5/2) gelernt haben:
+
+```py
+from datasets import load_dataset
+
+# Dies dauert ein paar Minuten, also hol dir einen Tee oder Kaffee, während du wartest :)
+data_files = "https://the-eye.eu/public/AI/pile_preliminary_components/PUBMED_title_abstracts_2019_baseline.jsonl.zst"
+pubmed_dataset = load_dataset("json", data_files=data_files, split="train")
+pubmed_dataset
+```
+
+```python out
+Dataset({
+    features: ['meta', 'text'],
+    num_rows: 15518009
+})
+```
+
+Wir sehen, dass unser Datensatz 15.518.009 Zeilen und 2 Spalten hat – das ist eine Menge!
+
+<Tip>
+
+✎ Standardmäßig dekomprimiert 🤗 Datasets die Dateien, die zum Laden eines Datensatzes benötigt werden. Wenn du Festplattenspeicher sparen möchtest, kannst du `DownloadConfig(delete_extracted=True)` an das `download_config`-Argument von `load_dataset()` übergeben. Weitere Details findest du in der [Dokumentation](https://huggingface.co/docs/datasets/package_reference/builder_classes#datasets.DownloadConfig).
+
+</Tip>
+
+Schauen wir uns den Inhalt des ersten Beispiels an:
+
+```py
+pubmed_dataset[0]
+```
+
+```python out
+{'meta': {'pmid': 11409574, 'language': 'eng'},
+ 'text': 'Epidemiology of hypoxaemia in children with acute lower respiratory infection.\\nTo determine the prevalence of hypoxaemia in children aged under 5 years suffering acute lower respiratory infections (ALRI), the risk factors for hypoxaemia in children under 5 years of age with ALRI, and the association of hypoxaemia with an increased risk of dying in children of the same age ...'}
+```
+
+Okay, das sieht wie der Abstract eines medizinischen Artikels aus. Sehen wir uns nun an, wie viel RAM wir zum Laden des Datensatzes verwendet haben!
+
+## Die Magie des Memory Mappings[[die-magie-des-memory-mappings]]
+
+Eine einfache Möglichkeit, die Speichernutzung in Python zu messen, ist die [`psutil`](https://psutil.readthedocs.io/en/latest/)-Bibliothek, die wie folgt mit `pip` installiert werden kann:
+
+```python
+!pip install psutil
+```
+
+Sie bietet eine `Process`-Klasse, mit der wir die Speichernutzung des aktuellen Prozesses wie folgt überprüfen können:
+
+```py
+import psutil
+
+# Process.memory_info wird in Bytes ausgedrückt, also in Megabyte umwandeln
+print(f"Verwendeter RAM: {psutil.Process().memory_info().rss / (1024 * 1024):.2f} MB")
+```
+
+```python out
+Verwendeter RAM: 5678.33 MB
+```
+
+Hier bezieht sich das `rss`-Attribut auf die _Resident Set Size_, also den Anteil des Speichers, den ein Prozess im RAM belegt. Diese Messung beinhaltet auch den Speicher, der vom Python-Interpreter und den geladenen Bibliotheken verwendet wird, sodass die tatsächliche Menge an Speicher, die zum Laden des Datensatzes verwendet wird, etwas kleiner ist. Zum Vergleich sehen wir uns an, wie groß der Datensatz auf der Festplatte ist, indem wir das Attribut `dataset_size` verwenden. Da das Ergebnis wie zuvor in Bytes ausgedrückt wird, müssen wir es manuell in Gigabyte umwandeln:
+
+```py
+print(f"Datensatzgröße in Bytes: {pubmed_dataset.dataset_size}")
+size_gb = pubmed_dataset.dataset_size / (1024**3)
+print(f"Datensatzgröße (Cache-Datei): {size_gb:.2f} GB")
+```
+
+```python out
+Datensatzgröße in Bytes: 20979437051
+Datensatzgröße (Cache-Datei): 19.54 GB
+```
+
+Schön – obwohl er fast 20 GB groß ist, können wir den Datensatz mit viel weniger RAM laden und darauf zugreifen!
+
+<Tip>
+
+✏️ **Probier es aus!** Wähle eines der [Teilmengen](https://the-eye.eu/public/AI/pile_preliminary_components/) aus The Pile, das größer ist als der RAM deines Laptops oder Desktops, lade es mit 🤗 Datasets und miss die Menge des verwendeten RAMs. Beachte, dass du dies in einem neuen Prozess tun solltest, um eine genaue Messung zu erhalten. Die dekomprimierten Größen jeder Teilmenge findest du in Tabelle 1 des [Pile-Papiers](https://arxiv.org/abs/2101.00027).
+
+</Tip>
+
+Wenn du mit Pandas vertraut bist, mag dieses Ergebnis überraschen, aufgrund von Wes Kinneys berühmter [Faustregel](https://wesmckinney.com/blog/apache-arrow-pandas-internals/), dass du typischerweise 5 bis 10 Mal so viel RAM benötigst wie die Größe deines Datensatzes. Wie löst 🤗 Datasets also dieses Speicherverwaltungsproblem? 🤗 Datasets behandelt jeden Datensatz als [Memory-Mapped File](https://de.wikipedia.org/wiki/Memory-Mapped_File), was eine Zuordnung zwischen RAM und Dateisystemspeicher bereitstellt. Dies ermöglicht es der Bibliothek, auf Elemente des Datensatzes zuzugreifen und damit zu arbeiten, ohne ihn vollständig in den Speicher laden zu müssen.
+
+Memory-Mapped Files können auch über mehrere Prozesse hinweg gemeinsam genutzt werden, was es ermöglicht, Methoden wie `Dataset.map()` zu parallelisieren, ohne den Datensatz verschieben oder kopieren zu müssen. Unter der Haube werden all diese Fähigkeiten durch das [Apache Arrow](https://arrow.apache.org)-Speicherformat und die [`pyarrow`](https://arrow.apache.org/docs/python/index.html)-Bibliothek realisiert, die das Laden und Verarbeiten von Daten blitzschnell machen. (Weitere Details zu Apache Arrow und Vergleiche mit Pandas findest du im [Blogbeitrag von Dejan Simic](https://towardsdatascience.com/apache-arrow-read-dataframe-with-zero-memory-69634092b1a).) Um dies in Aktion zu sehen, führen wir einen kleinen Geschwindigkeitstest durch, indem wir über alle Elemente im PubMed Abstracts-Datensatz iterieren:
+
+```py
+import timeit
+
+code_snippet = """batch_size = 1000
+
+for idx in range(0, len(pubmed_dataset), batch_size):
+    _ = pubmed_dataset[idx:idx + batch_size]
+"""
+
+time = timeit.timeit(stmt=code_snippet, number=1, globals=globals())
+print(
+    f"Iteriert über {len(pubmed_dataset)} Beispiele (ca. {size_gb:.1f} GB) in "
+    f"{time:.1f}s, d.h. {size_gb/time:.3f} GB/s"
+)
+```
+
+```python out
+'Iteriert über 15518009 Beispiele (ca. 19.5 GB) in 64.2s, d.h. 0.304 GB/s'
+```
+
+Hier haben wir das `timeit`-Modul von Python verwendet, um die Ausführungszeit von `code_snippet` zu messen. Du wirst normalerweise in der Lage sein, über einen Datensatz mit einer Geschwindigkeit von einigen Zehnteln GB/s bis zu mehreren GB/s zu iterieren. Dies funktioniert hervorragend für die überwiegende Mehrheit der Anwendungen, aber manchmal musst du mit einem Datensatz arbeiten, der zu groß ist, um ihn überhaupt auf der Festplatte deines Laptops zu speichern. Wenn wir zum Beispiel versuchen würden, The Pile vollständig herunterzuladen, bräuchten wir 825 GB freien Speicherplatz! Um diese Fälle zu behandeln, bietet 🤗 Datasets eine Streaming-Funktion, mit der wir Elemente on-the-fly herunterladen und darauf zugreifen können, ohne den gesamten Datensatz herunterladen zu müssen. Schauen wir uns an, wie das funktioniert.
+
+<Tip>
+
+💡 In Jupyter Notebooks kannst du Zellen auch mit der [`%%timeit` Magic-Funktion](https://ipython.readthedocs.io/en/stable/interactive/magics.html#magic-timeit) timen.
+
+</Tip>
+
+## Streaming von Datensätzen[[streaming-von-datensätzen]]
+
+Um das Streaming von Datensätzen zu aktivieren, musst du nur das Argument `streaming=True` an die Funktion `load_dataset()` übergeben. Laden wir zum Beispiel den PubMed Abstracts-Datensatz erneut, aber im Streaming-Modus:
+
+```py
+pubmed_dataset_streamed = load_dataset(
+    "json", data_files=data_files, split="train", streaming=True
+)
+```
+
+Anstelle des bekannten `Dataset`, dem wir an anderer Stelle in diesem Kapitel begegnet sind, ist das mit `streaming=True` zurückgegebene Objekt ein `IterableDataset`. Wie der Name schon sagt, müssen wir über ein `IterableDataset` iterieren, um auf seine Elemente zuzugreifen. Wir können auf das erste Element unseres gestreamten Datensatzes wie folgt zugreifen:
+
+```py
+next(iter(pubmed_dataset_streamed))
+```
+
+```python out
+{'meta': {'pmid': 11409574, 'language': 'eng'},
+ 'text': 'Epidemiology of hypoxaemia in children with acute lower respiratory infection.\\nTo determine the prevalence of hypoxaemia in children aged under 5 years suffering acute lower respiratory infections (ALRI), the risk factors for hypoxaemia in children under 5 years of age with ALRI, and the association of hypoxaemia with an increased risk of dying in children of the same age ...'}
+```
+
+Die Elemente aus einem gestreamten Datensatz können on-the-fly mit `IterableDataset.map()` verarbeitet werden, was während des Trainings nützlich ist, wenn du die Eingaben tokenisieren musst. Der Prozess ist genau derselbe wie der, den wir zum Tokenisieren unseres Datensatzes in [Kapitel 3](/course/chapter3) verwendet haben, mit dem einzigen Unterschied, dass die Ausgaben einzeln zurückgegeben werden:
+
+```py
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
+tokenized_dataset = pubmed_dataset_streamed.map(lambda x: tokenizer(x["text"]))
+next(iter(tokenized_dataset))
+```
+
+```python out
+{'input_ids': [101, 4958, 5178, 4328, 6779, ...], 'attention_mask': [1, 1, 1, 1, 1, ...]}
+```
+
+<Tip>
+
+💡 Um die Tokenisierung mit Streaming zu beschleunigen, kannst du `batched=True` übergeben, wie wir im letzten Abschnitt gesehen haben. Es verarbeitet die Beispiele Batch für Batch; die Standard-Batch-Größe ist 1.000 und kann mit dem `batch_size`-Argument angegeben werden.
+
+</Tip>
+
+Du kannst einen gestreamten Datensatz auch mit `IterableDataset.shuffle()` mischen, aber im Gegensatz zu `Dataset.shuffle()` mischt dies nur die Elemente in einer vordefinierten `buffer_size`:
+
+```py
+shuffled_dataset = pubmed_dataset_streamed.shuffle(buffer_size=10_000, seed=42)
+next(iter(shuffled_dataset))
+```
+
+```python out
+{'meta': {'pmid': 11410799, 'language': 'eng'},
+ 'text': 'Randomized study of dose or schedule modification of granulocyte colony-stimulating factor in platinum-based chemotherapy for elderly patients with lung cancer ...'}
+```
+
+In diesem Beispiel haben wir ein zufälliges Beispiel aus den ersten 10.000 Beispielen im Puffer ausgewählt. Sobald auf ein Beispiel zugegriffen wird, wird sein Platz im Puffer mit dem nächsten Beispiel im Korpus gefüllt (d.h. dem 10.001. Beispiel im obigen Fall). Du kannst auch Elemente aus einem gestreamten Datensatz mit den Funktionen `IterableDataset.take()` und `IterableDataset.skip()` auswählen, die ähnlich wie `Dataset.select()` funktionieren. Um beispielsweise die ersten 5 Beispiele im PubMed Abstracts-Datensatz auszuwählen, können wir Folgendes tun:
+
+```py
+dataset_head = pubmed_dataset_streamed.take(5)
+list(dataset_head)
+```
+
+```python out
+[{'meta': {'pmid': 11409574, 'language': 'eng'},
+  'text': 'Epidemiology of hypoxaemia in children with acute lower respiratory infection ...'},
+ {'meta': {'pmid': 11409575, 'language': 'eng'},
+  'text': 'Clinical signs of hypoxaemia in children with acute lower respiratory infection: indicators of oxygen therapy ...'},
+ {'meta': {'pmid': 11409576, 'language': 'eng'},
+  'text': "Hypoxaemia in children with severe pneumonia in Papua New Guinea ..."},
+ {'meta': {'pmid': 11409577, 'language': 'eng'},
+  'text': 'Oxygen concentrators and cylinders ...'},
+ {'meta': {'pmid': 11409578, 'language': 'eng'},
+  'text': 'Oxygen supply in rural africa: a personal experience ...'}]
+```
+
+Ebenso kannst du die Funktion `IterableDataset.skip()` verwenden, um Trainings- und Validierungs-Splits aus einem gemischten Datensatz wie folgt zu erstellen:
+
+```py
+# Überspringe die ersten 1.000 Beispiele und nimm den Rest in den Trainingssatz auf
+train_dataset = shuffled_dataset.skip(1000)
+# Nimm die ersten 1.000 Beispiele für den Validierungssatz
+validation_dataset = shuffled_dataset.take(1000)
+```
+
+Runden wir unsere Erkundung des Datensatz-Streamings mit einer gängigen Anwendung ab: dem Kombinieren mehrerer Datensätze zu einem einzigen Korpus. 🤗 Datasets bietet eine `interleave_datasets()`-Funktion, die eine Liste von `IterableDataset`-Objekten in ein einzelnes `IterableDataset` umwandelt, wobei die Elemente des neuen Datensatzes durch Abwechseln zwischen den Quellenbeispielen erhalten werden. Diese Funktion ist besonders nützlich, wenn du versuchst, große Datensätze zu kombinieren. Als Beispiel streamen wir die FreeLaw-Teilmenge von The Pile, einen 51 GB großen Datensatz mit Rechtsgutachten von US-Gerichten:
+
+```py
+law_dataset_streamed = load_dataset(
+    "json",
+    data_files="https://the-eye.eu/public/AI/pile_preliminary_components/FreeLaw_Opinions.jsonl.zst",
+    split="train",
+    streaming=True,
+)
+next(iter(law_dataset_streamed))
+```
+
+```python out
+{'meta': {'case_ID': '110921.json',
+  'case_jurisdiction': 'scotus.tar.gz',
+  'date_created': '2010-04-28T17:12:49Z'},
+ 'text': '\\n461 U.S. 238 (1983)\\nOLIM ET AL.\\nv.\\nWAKINEKONA\\nNo. 81-1581.\\nSupreme Court of United States.\\nArgued January 19, 1983.\\nDecided April 26, 1983.\\nCERTIORARI TO THE UNITED STATES COURT OF APPEALS FOR THE NINTH CIRCUIT\\n*239 Michael A. Lilly, First Deputy Attorney General of Hawaii, argued the cause for petitioners. With him on the brief was James H. Dannenberg, Deputy Attorney General...'}
+```
+
+Dieser Datensatz ist groß genug, um den RAM der meisten Laptops zu belasten, dennoch konnten wir ihn problemlos laden und darauf zugreifen! Kombinieren wir nun die Beispiele aus den FreeLaw- und PubMed Abstracts-Datensätzen mit der Funktion `interleave_datasets()`:
+
+```py
+from itertools import islice
+from datasets import interleave_datasets
+
+combined_dataset = interleave_datasets([pubmed_dataset_streamed, law_dataset_streamed])
+list(islice(combined_dataset, 2))
+```
+
+```python out
+[{'meta': {'pmid': 11409574, 'language': 'eng'},
+  'text': 'Epidemiology of hypoxaemia in children with acute lower respiratory infection.\\nTo determine the prevalence of hypoxaemia in children aged under 5 years suffering acute lower respiratory infections (ALRI), the risk factors for hypoxaemia in children under 5 years of age with ALRI, and the association of hypoxaemia with an increased risk of dying in children of the same age ...'},
+ {'meta': {'case_ID': '110921.json',
+   'case_jurisdiction': 'scotus.tar.gz',
+   'date_created': '2010-04-28T17:12:49Z'},
+  'text': '\\n461 U.S. 238 (1983)\\nOLIM ET AL.\\nv.\\nWAKINEKONA\\nNo. 81-1581.\\nSupreme Court of United States.\\nArgued January 19, 1983.\\nDecided April 26, 1983.\\nCERTIORARI TO THE UNITED STATES COURT OF APPEALS FOR THE NINTH CIRCUIT\\n*239 Michael A. Lilly, First Deputy Attorney General of Hawaii, argued the cause for petitioners. With him on the brief was James H. Dannenberg, Deputy Attorney General...'}]
+```
+
+Wie du siehst, wechselt der `combined_dataset` zwischen den beiden Quelldatensätzen. Standardmäßig durchläuft `interleave_datasets()` die einzelnen Datensätze vollständig, bevor es zum nächsten übergeht, aber du kannst das Verhalten mit dem `probabilities`-Argument ändern, um die Datensätze basierend auf einer benutzerdefinierten Stichprobenverteilung zu mischen.
+
+Damit schließen wir unsere Tour durch die 🤗 Datasets-Bibliothek ab. Du solltest jetzt ein gutes Verständnis für die Hauptfunktionen haben und bereit sein, sie auf deine eigenen Datensätze anzuwenden! 
